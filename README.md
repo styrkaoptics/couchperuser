@@ -20,6 +20,9 @@ and Erlang. Other encodings would be possible, but would require
 additional client and server-side code to support that encoding. This
 is the simplest scheme that is obviously correct.
 
+Added:
+After the database is created, it will also add an attribute of "database" with a refence to the DB created in the users document. ie "org.couchdb.user:USERNAME" 
+
 Installation
 ----
 
