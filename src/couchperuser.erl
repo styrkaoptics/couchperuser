@@ -60,6 +60,7 @@ change_filter({change, {Doc}, _Prepend}, _ResType, Acc=#filter{}) ->
                 false ->
                     {ok, Db} = ensure_user_db(User),
                     try
+                        ensure_user_profile(User),
                         ensure_security(User, Db)
                     after
                         couch_db:close(Db)
@@ -84,6 +85,52 @@ ensure_user_db(User) ->
             Ok;
         _Err ->
             couch_db:create(User_Db, [admin_ctx()])
+    end.
+
+open_auth_db() ->
+    DbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db",  "_users")),
+    DbOptions = [{user_ctx, #user_ctx{roles = [<<"_admin">>]}}],
+    {ok, AuthDb} = couch_db:open_int(DbName, DbOptions),
+    AuthDb.
+
+ensure_user_profile(User) ->
+    User_Db = user_db_name(User),
+    Db = open_auth_db(),
+    Username = ?b2l(User),
+    DocID = "org.couchdb.user:" ++ Username,
+    %% Update a _users record with a new access key
+    try
+        case (catch couch_db:open_doc(Db, ?l2b(DocID), [ejson_body])) of
+            {ok, Doc} ->
+                {DocBody} = Doc#doc.body,
+                DBDetected = couch_util:get_value(<<"database">>, DocBody, false),
+                ?LOG_DEBUG("User doc checking for database key: ~p", [DBDetected]),
+                case DBDetected of
+                  User_Db ->
+                    %% Stops the loop since this is called after every doc update
+                    ?LOG_DEBUG("User doc doesnt need updating: ~p", [DocBody]);
+                  false ->
+                    ?LOG_DEBUG("User doc before update: ~p", [DocBody]),
+                    %% Update values that are not empty
+                    DatabaseDetails = [{<<"database">>, User_Db}],
+                    NewDocBody = lists:append([DocBody,DatabaseDetails]),
+                    ?LOG_DEBUG("User New doc before update: ~p", [NewDocBody]),
+                    % %% To prevent the validation functions for the db taking umbrage at our
+                    % %% behind the scenes twiddling, we blank them out.
+                    % %% NOTE: Potentially fragile. Possibly dangerous?
+                    DbWithoutValidationFunc = Db#db{ validate_doc_funs=[] },
+                    {ok, _} = couch_db:update_doc(DbWithoutValidationFunc, Doc#doc{body = {NewDocBody}}, [])
+                end,
+                ok;
+            _ ->
+                ?LOG_ERROR("No doc found for Doc ID ~p.", [DocID]),
+                throw(document_not_found_for_user)
+        end
+    catch throw:conflict ->
+            %% Shouldn't happen but you can never be too careful
+            ?LOG_ERROR("Conflict error when updating user document ~p.", [DocID])
+    after
+        couch_db:close(Db)
     end.
 
 add_user(User, Prop, {Modified, SecProps}) ->
